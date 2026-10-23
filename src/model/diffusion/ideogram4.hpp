@@ -75,10 +75,15 @@ namespace Ideogram4 {
     __STATIC_INLINE__ ggml_tensor* timestep_embedding_sin_cos(ggml_context* ctx,
                                                               ggml_tensor* timesteps,
                                                               int dim) {
-        GGML_ASSERT(dim % 2 == 0);
-        auto embedding = ggml_ext_timestep_embedding(ctx, timesteps, dim, TIMESTEP_MAX_PERIOD, 10.f);
+        GGML_ASSERT(dim >= 4 && dim % 2 == 0);
+        // The reference uses j / (half - 1), including the 1 / max_period endpoint.
+        auto embedding = ggml_ext_timestep_embedding(ctx, timesteps, dim - 2, TIMESTEP_MAX_PERIOD, 10.f);
         auto chunks    = ggml_ext_chunk(ctx, embedding, 2, 0);
-        return ggml_concat(ctx, chunks[1], chunks[0], 0);
+        auto endpoint  = ggml_ext_scale(ctx, timesteps, 10.f / TIMESTEP_MAX_PERIOD);
+        endpoint       = ggml_reshape_2d(ctx, endpoint, 1, timesteps->ne[0]);
+        auto sine      = ggml_concat(ctx, chunks[1], ggml_sin(ctx, endpoint), 0);
+        auto cosine    = ggml_concat(ctx, chunks[0], ggml_cos(ctx, endpoint), 0);
+        return ggml_concat(ctx, sine, cosine, 0);
     }
 
     __STATIC_INLINE__ ggml_tensor* to_token_modulation(ggml_context* ctx, ggml_tensor* x) {
