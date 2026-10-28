@@ -70,6 +70,22 @@ bool sd_probe_conv_direct(ggml_backend_t backend, bool conv3d) {
                 BackendProbeCase test;
                 test.build = [conv3d, shape](BackendProbeGraph& graph, bool direct) {
                     build_conv_direct_probe(graph, conv3d, direct, shape.first, shape.second);
+                    if (conv3d && !direct) {
+                        auto* matmul = graph.output;
+                        for (const auto op : {GGML_OP_RESHAPE, GGML_OP_CONT, GGML_OP_PERMUTE, GGML_OP_RESHAPE}) {
+                            if (matmul == nullptr || matmul->op != op) {
+                                graph.output = nullptr;
+                                return;
+                            }
+                            matmul = matmul->src[0];
+                        }
+                        if (matmul == nullptr || matmul->op != GGML_OP_MUL_MAT) {
+                            graph.output = nullptr;
+                            return;
+                        }
+                        // The reference must not share the accumulator precision failure being tested.
+                        ggml_mul_mat_set_prec(matmul, GGML_PREC_F32);
+                    }
                 };
                 test.initialize = [conv3d](BackendProbeGraph& graph) { return initialize_conv_probe(graph, conv3d); };
                 cases.push_back(std::move(test));
