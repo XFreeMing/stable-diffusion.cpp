@@ -1242,32 +1242,41 @@ bool StableDiffusionGGML::flash_attention_for(SDBackendModule module) {
     return enabled;
 }
 
-bool StableDiffusionGGML::conv_direct_for(SDBackendModule module, bool conv3d) {
+bool StableDiffusionGGML::conv_direct_for(SDBackendModule module, bool conv3d, bool& enabled) {
+    enabled = false;
     const auto& params     = config_->params;
     const std::string mode = conv_direct_assignment.get(module);
     if (mode == "on" || mode == "off") {
-        return mode == "on";
+        enabled = mode == "on";
+        return true;
     }
     if (strlen(SAFE_STR(params.conv_direct_mode)) == 0 &&
         (module == SDBackendModule::VAE ? params.vae_conv_direct : params.diffusion_conv_direct)) {
+        enabled = true;
         return true;
     }
     auto& by_backend = conv3d ? conv3d_direct_by_backend : conv2d_direct_by_backend;
     auto backends    = backend_manager.runtime_backends(module);
-    bool enabled     = !backends.empty();
+    enabled          = !backends.empty();
     bool any_enabled = false;
     for (auto backend : backends) {
         auto it = by_backend.find(backend);
         if (it == by_backend.end()) {
             it = by_backend.emplace(backend, sd_probe_conv_direct(backend, conv3d)).first;
         }
-        enabled     = enabled && it->second;
-        any_enabled = any_enabled || it->second;
+        if (it->second == SDConvDirectProbeResult::Failed) {
+            LOG_ERROR("conv%dd direct auto: %s probe failed; refusing model initialization", conv3d ? 3 : 2, sd_backend_module_name(module));
+            enabled = false;
+            return false;
+        }
+        const bool backend_enabled = it->second == SDConvDirectProbeResult::On;
+        enabled                    = enabled && backend_enabled;
+        any_enabled                = any_enabled || backend_enabled;
     }
     if (any_enabled && !enabled) {
         LOG_INFO("conv%dd direct auto: %s -> off (compute devices disagree)", conv3d ? 3 : 2, sd_backend_module_name(module));
     }
-    return enabled;
+    return true;
 }
 
 bool StableDiffusionGGML::validate_and_load_runners() {
@@ -1308,21 +1317,30 @@ bool StableDiffusionGGML::validate_and_load_runners() {
         return false;
     }
     const auto set_conv_direct = [this](SDBackendModule module, const std::vector<GGMLRunner*>& runners) {
-        const bool conv2d = conv_direct_for(module, false);
-        const bool conv3d = conv_direct_for(module, true);
+        bool conv2d = false, conv3d = false;
+        if (!conv_direct_for(module, false, conv2d) || !conv_direct_for(module, true, conv3d)) {
+            return false;
+        }
         for (auto runner : runners) {
             if (runner != nullptr) {
                 runner->set_conv2d_direct_enabled(conv2d);
                 runner->set_conv3d_direct_enabled(conv3d);
             }
         }
+        return true;
     };
-    set_conv_direct(SDBackendModule::DIFFUSION, {diffusion_model.get(), high_noise_diffusion_model.get()});
+    if (!set_conv_direct(SDBackendModule::DIFFUSION, {diffusion_model.get(), high_noise_diffusion_model.get()})) {
+        return false;
+    }
     if (first_stage_model || preview_vae || audio_vae_model) {
-        set_conv_direct(SDBackendModule::VAE, {first_stage_model.get(), preview_vae.get(), audio_vae_model.get()});
+        if (!set_conv_direct(SDBackendModule::VAE, {first_stage_model.get(), preview_vae.get(), audio_vae_model.get()})) {
+            return false;
+        }
     }
     if (control_net) {
-        set_conv_direct(SDBackendModule::CONTROL_NET, {control_net.get()});
+        if (!set_conv_direct(SDBackendModule::CONTROL_NET, {control_net.get()})) {
+            return false;
+        }
     }
     LOG_VERBOSE("validating model metadata");
 

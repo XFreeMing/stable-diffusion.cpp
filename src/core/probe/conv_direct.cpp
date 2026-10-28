@@ -47,24 +47,25 @@ static bool initialize_conv_probe(BackendProbeGraph& graph, bool conv3d) {
     return true;
 }
 
-bool sd_probe_conv_direct(ggml_backend_t backend, bool conv3d) {
+SDConvDirectProbeResult sd_probe_conv_direct(ggml_backend_t backend, bool conv3d) {
     if (backend == nullptr) {
-        return false;
+        return SDConvDirectProbeResult::Off;
     }
-    const char* name = ggml_backend_name(backend);
-    const int dims   = conv3d ? 3 : 2;
+    const char* name  = ggml_backend_name(backend);
+    const int dims    = conv3d ? 3 : 2;
+    const bool vulkan = sd_backend_is(backend, "Vulkan");
     try {
         BackendProbeGraph capability(backend);
         if (capability.ctx == nullptr) {
-            LOG_INFO("conv%dd direct auto: %s -> off (probe graph unavailable)", dims, name);
-            return false;
+            LOG_WARN("conv%dd direct auto: %s -> %s (probe graph unavailable)", dims, name, vulkan ? "failed" : "off");
+            return vulkan ? SDConvDirectProbeResult::Failed : SDConvDirectProbeResult::Off;
         }
         build_conv_direct_probe(capability, conv3d, true);
         if (!capability.supported()) {
-            LOG_INFO("conv%dd direct auto: %s -> off (unsupported probe graph)", dims, name);
-            return false;
+            LOG_INFO("conv%dd direct auto: %s -> %s (unsupported probe graph)", dims, name, vulkan ? "failed" : "off");
+            return vulkan ? SDConvDirectProbeResult::Failed : SDConvDirectProbeResult::Off;
         }
-        if (sd_backend_is(backend, "Vulkan")) {
+        if (vulkan) {
             std::vector<BackendProbeCase> cases;
             for (const auto& shape : {std::pair<int, int>{32, 64}, {16, 128}}) {
                 BackendProbeCase test;
@@ -92,21 +93,24 @@ bool sd_probe_conv_direct(ggml_backend_t backend, bool conv3d) {
             }
             const auto result = sd_run_backend_probe(backend, 0, cases);
             if (!result.completed) {
-                LOG_WARN("conv%dd direct auto: %s -> off (%s)", dims, name, result.error.c_str());
-                return false;
+                LOG_WARN("conv%dd direct auto: %s -> failed (%s)", dims, name, result.error.c_str());
+                return SDConvDirectProbeResult::Failed;
             }
             LOG_INFO("conv%dd direct auto: %s -> %s (probe: im2col %.3f ms, direct %.3f ms)",
                      dims, name, result.candidate_faster ? "on" : "off", result.reference_ms, result.candidate_ms);
-            return result.candidate_faster;
+            return result.candidate_faster ? SDConvDirectProbeResult::On : SDConvDirectProbeResult::Off;
         }
         if (sd_backend_supports_conv_implicit_gemm(backend, conv3d)) {
             LOG_INFO("conv%dd direct auto: %s -> on (implicit GEMM)", dims, name);
-            return true;
+            return SDConvDirectProbeResult::On;
         }
         LOG_INFO("conv%dd direct auto: %s -> off (no implicit GEMM path)", dims, name);
-        return false;
+        return SDConvDirectProbeResult::Off;
     } catch (const std::exception& error) {
-        LOG_WARN("conv%dd direct auto: %s -> off (probe failed: %s)", dims, name, error.what());
-        return false;
+        LOG_WARN("conv%dd direct auto: %s -> %s (probe failed: %s)", dims, name, vulkan ? "failed" : "off", error.what());
+        return vulkan ? SDConvDirectProbeResult::Failed : SDConvDirectProbeResult::Off;
+    } catch (...) {
+        LOG_WARN("conv%dd direct auto: %s -> %s (probe failed: unknown exception)", dims, name, vulkan ? "failed" : "off");
+        return vulkan ? SDConvDirectProbeResult::Failed : SDConvDirectProbeResult::Off;
     }
 }

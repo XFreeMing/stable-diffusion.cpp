@@ -16,6 +16,7 @@
 
 #include "core/ggml_extend_backend.h"
 #include "core/ggml_graph_cut.h"
+#include "core/probe/conv_direct.h"
 #include "core/tensor.hpp"
 #include "core/util.h"
 #include "model/adapter/lora.hpp"
@@ -52,8 +53,8 @@ public:
     std::unordered_map<ggml_backend_t, bool> flash_attn_by_backend;
     SDBackendAssignment flash_attn_assignment;
     SDBackendAssignment conv_direct_assignment;
-    std::unordered_map<ggml_backend_t, bool> conv2d_direct_by_backend;
-    std::unordered_map<ggml_backend_t, bool> conv3d_direct_by_backend;
+    std::unordered_map<ggml_backend_t, SDConvDirectProbeResult> conv2d_direct_by_backend;
+    std::unordered_map<ggml_backend_t, SDConvDirectProbeResult> conv3d_direct_by_backend;
 
     SDVersion version;
     bool external_vae_is_invalid = false;
@@ -341,7 +342,7 @@ public:
 
     bool validate_and_load_runners();
     bool flash_attention_for(SDBackendModule module);
-    bool conv_direct_for(SDBackendModule module, bool conv3d);
+    bool conv_direct_for(SDBackendModule module, bool conv3d, bool& enabled);
 
     bool build_denoiser();
 
